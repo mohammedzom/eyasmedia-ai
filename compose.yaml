@@ -1,0 +1,9 @@
+services:
+  api:
+    build:
+      context: .
+    image: eyas-project-management-assistant
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
