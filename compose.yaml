@@ -4,6 +4,6 @@ services:
       context: .
     image: eyas-project-management-assistant
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     env_file:
       - .env

@@ -38,7 +38,12 @@ docker compose down
 ```env
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-2.5-flash
+GEMINI_TIMEOUT_SECONDS=25
 ```
+
+The Docker Compose service binds port 8000 to `127.0.0.1` so it is reachable
+by the Laravel application on the same host without exposing the AI API to the
+public network.
 
 ## Main endpoint
 
