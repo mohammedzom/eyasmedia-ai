@@ -5,7 +5,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.schemas import ProjectTasksData, Task
+from app.schemas import AiErrorCode, ProjectTasksData, Task
+from app.services.ai_error import AiServiceError
 
 
 client = TestClient(app)
@@ -114,25 +115,135 @@ def test_empty_project_description_is_rejected() -> None:
     assert response.status_code == 422
 
 
-def test_gemini_failure_returns_safe_response(
+@pytest.mark.parametrize(
+    ("service_error", "expected_status", "expected_message"),
+    [
+        (
+            AiServiceError(
+                AiErrorCode.QUOTA_EXCEEDED,
+                "AI quota has been exhausted.",
+                429,
+                True,
+            ),
+            429,
+            "AI quota has been exhausted.",
+        ),
+        (
+            AiServiceError(
+                AiErrorCode.RATE_LIMITED,
+                "AI provider rate limit reached.",
+                429,
+                True,
+            ),
+            429,
+            "AI provider rate limit reached.",
+        ),
+        (
+            AiServiceError(
+                AiErrorCode.TIMEOUT,
+                "AI task generation timed out.",
+                504,
+                True,
+            ),
+            504,
+            "AI task generation timed out.",
+        ),
+        (
+            AiServiceError(
+                AiErrorCode.PROVIDER_UNAVAILABLE,
+                "AI task generation is temporarily unavailable.",
+                503,
+                True,
+            ),
+            503,
+            "AI task generation is temporarily unavailable.",
+        ),
+        (
+            AiServiceError(
+                AiErrorCode.AUTHENTICATION_FAILED,
+                "AI provider authentication failed.",
+                503,
+                False,
+            ),
+            503,
+            "AI provider authentication failed.",
+        ),
+        (
+            AiServiceError(
+                AiErrorCode.INVALID_RESPONSE,
+                "AI provider returned an invalid response.",
+                502,
+                False,
+            ),
+            502,
+            "AI provider returned an invalid response.",
+        ),
+        (
+            AiServiceError(
+                AiErrorCode.CONFIGURATION_ERROR,
+                "AI task generation is not configured.",
+                503,
+                False,
+            ),
+            503,
+            "AI task generation is not configured.",
+        ),
+    ],
+)
+def test_expected_ai_failure_returns_stable_safe_response(
+    service_error: AiServiceError,
+    expected_status: int,
+    expected_message: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     with (
-        caplog.at_level(logging.ERROR, logger="app.main"),
+        caplog.at_level(logging.WARNING, logger="app.main"),
         patch(
             "app.main.gemini_service.generate_tasks",
-            side_effect=RuntimeError("Gemini unavailable"),
+            side_effect=service_error,
         ),
     ):
         response = client.post("/api/v1/generate-tasks", json=VALID_REQUEST)
 
-    assert response.status_code == 502
+    assert response.status_code == expected_status
     assert response.json() == {
         "status": False,
-        "messages": "Failed to generate project tasks.",
+        "messages": expected_message,
         "data": {},
+        "error": {
+            "code": service_error.code.value,
+            "retryable": service_error.retryable,
+        },
     }
-    assert "Gemini unavailable" not in response.text
     assert "traceback" not in response.text.lower()
     assert "GEMINI_API_KEY" not in response.text
-    assert "Gemini task generation failed." in caplog.text
+    assert "AI task generation failed." in caplog.text
+
+
+def test_unexpected_failure_returns_internal_error_without_exception_details(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret_provider_message = "provider-secret-body"
+
+    with (
+        caplog.at_level(logging.ERROR, logger="app.main"),
+        patch(
+            "app.main.gemini_service.generate_tasks",
+            side_effect=RuntimeError(secret_provider_message),
+        ),
+    ):
+        response = client.post("/api/v1/generate-tasks", json=VALID_REQUEST)
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": False,
+        "messages": "AI task generation failed unexpectedly.",
+        "data": {},
+        "error": {
+            "code": "AI_INTERNAL_ERROR",
+            "retryable": False,
+        },
+    }
+    assert secret_provider_message not in response.text
+    assert secret_provider_message not in caplog.text
+    assert "Traceback" not in caplog.text
